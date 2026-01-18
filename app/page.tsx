@@ -1,7 +1,8 @@
 "use client"
 
 import React, { useEffect, useState, useRef } from 'react'
-import type { ReadmeInputs, Suggestion, GitHubInspectResponse } from '../types'
+import type { ReadmeInputs, Suggestion, GitHubInspectResponse, HeuristicRecommendation, HeuristicsInput } from '../types'
+import { generateHeuristicRecommendations, hasRecentActivity, calculateTotalStars } from '../lib/heuristicsEngine'
 
 const defaultInputs: ReadmeInputs = {
   name: 'Your Name',
@@ -35,6 +36,10 @@ export default function Page() {
   const [inspecting, setInspecting] = useState(false)
   const [inspectError, setInspectError] = useState<string | null>(null)
 
+  // V2.1: Heuristic recommendations state
+  const [heuristicRecs, setHeuristicRecs] = useState<HeuristicRecommendation[]>([])
+  const [githubDataForHeuristics, setGithubDataForHeuristics] = useState<HeuristicsInput['githubData']>(null)
+
   // Generate README by calling backend
   async function generate(it: ReadmeInputs) {
     setLoading(true)
@@ -62,6 +67,16 @@ export default function Page() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inputs])
+
+  // V2.1: Regenerate heuristic recommendations when inputs or GitHub data change
+  useEffect(() => {
+    const heuristicsInput: HeuristicsInput = {
+      userInputs: inputs,
+      githubData: githubDataForHeuristics
+    }
+    const recs = generateHeuristicRecommendations(heuristicsInput)
+    setHeuristicRecs(recs)
+  }, [inputs, githubDataForHeuristics])
 
   // Handlers
   function update<K extends keyof ReadmeInputs>(key: K, value: ReadmeInputs[K]) {
@@ -110,6 +125,7 @@ export default function Page() {
     setInspecting(true)
     setInspectError(null)
     setSuggestions([])
+    setGithubDataForHeuristics(null)
     try {
       const res = await fetch('/api/github/inspect', {
         method: 'POST',
@@ -121,6 +137,20 @@ export default function Page() {
         setInspectError(data.error)
       } else {
         setSuggestions(data.suggestions)
+
+        // V2.1: Store normalized GitHub data for heuristics engine
+        const repoCount = data.repos.length
+        const recentActivity = hasRecentActivity(data.repos)
+        const totalStars = calculateTotalStars(data.repos)
+
+        setGithubDataForHeuristics({
+          repoCount,
+          hasRecentActivity: recentActivity,
+          primaryLanguages: data.languages,
+          topRepos: data.repos.slice(0, 6),
+          totalStars,
+          forkRatio: 0 // Not available from normalized data; set to 0 as safe default
+        })
       }
     } catch (err: any) {
       setInspectError(err?.message || 'Failed to inspect GitHub profile')
@@ -152,6 +182,32 @@ export default function Page() {
     }
     // Remove the applied suggestion from list
     setSuggestions((prev) => prev.filter((s) => s !== suggestion))
+  }
+
+  // V2.1: Apply a heuristic recommendation (user explicitly approves)
+  function applyHeuristicRecommendation(rec: HeuristicRecommendation) {
+    if (rec.suggestedAction) {
+      const { type, target, value } = rec.suggestedAction
+
+      if (target === 'tone' && type === 'change' && value) {
+        setInputs((s) => ({ ...s, tone: value }))
+      } else if (target === 'goal' && type === 'change' && value) {
+        setInputs((s) => ({ ...s, goal: value }))
+      } else if (target === 'techStack' && type === 'enable' && value) {
+        setInputs((s) => ({
+          ...s,
+          techStack: Array.from(new Set([...s.techStack, ...(Array.isArray(value) ? value : [value])]))
+        }))
+      } else {
+        // For other recommendations without direct state mapping, inform the user
+        alert(`Recommendation: ${rec.message}`)
+      }
+    } else {
+      // Informational recommendation (warnings, etc.)
+      alert(`Note: ${rec.message}`)
+    }
+    // Remove the applied recommendation from list
+    setHeuristicRecs((prev) => prev.filter((r) => r !== rec))
   }
 
   return (
@@ -266,6 +322,7 @@ export default function Page() {
           )}
           {suggestions.length > 0 && (
             <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#1e40af', marginBottom: 6 }}>📊 GitHub-Based Suggestions</div>
               {suggestions.map((s, i) => (
                 <div key={i} style={{ marginBottom: 8, padding: 8, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 4 }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
@@ -281,6 +338,38 @@ export default function Page() {
                     <span style={{ flex: 1, fontSize: 13 }}>{s.message}</span>
                     {(s.data?.project || s.data?.languages) && (
                       <button onClick={() => applySuggestion(s)} style={{ fontSize: 12 }}>Apply</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* V2.1: Heuristic Recommendations */}
+          {heuristicRecs.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#7c3aed', marginBottom: 6 }}>🧠 Smart Recommendations</div>
+              {heuristicRecs.map((rec, i) => (
+                <div key={i} style={{ marginBottom: 8, padding: 8, background: '#faf5ff', border: '1px solid #e9d5ff', borderRadius: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <span style={{
+                      fontSize: 11,
+                      padding: '2px 6px',
+                      borderRadius: 3,
+                      background: rec.recommendationType === 'warning' ? '#fef3c7' : rec.recommendationType === 'tone' ? '#fce7f3' : '#ddd6fe',
+                      color: rec.recommendationType === 'warning' ? '#92400e' : rec.recommendationType === 'tone' ? '#9d174d' : '#5b21b6'
+                    }}>
+                      {rec.recommendationType}
+                    </span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13 }}>{rec.message}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{rec.explanation}</div>
+                    </div>
+                    {rec.suggestedAction && (
+                      <button onClick={() => applyHeuristicRecommendation(rec)} style={{ fontSize: 12 }}>Apply</button>
+                    )}
+                    {!rec.suggestedAction && (
+                      <button onClick={() => applyHeuristicRecommendation(rec)} style={{ fontSize: 12, opacity: 0.7 }}>Dismiss</button>
                     )}
                   </div>
                 </div>

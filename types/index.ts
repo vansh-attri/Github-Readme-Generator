@@ -60,3 +60,28 @@ export interface Suggestion {
     project?: { name: string; impact: string }
   }
 }
+
+// V2.1: Heuristic Recommendations Types
+
+export interface HeuristicRecommendation {
+  recommendationType: 'section' | 'tone' | 'warning'
+  message: string
+  explanation: string
+  suggestedAction?: {
+    type: 'enable' | 'disable' | 'change'
+    target: 'projects' | 'techStack' | 'goal' | 'tone' | 'whatIDo' | 'connect'
+    value?: any
+  }
+}
+
+export interface HeuristicsInput {
+  userInputs: ReadmeInputs
+  githubData: {
+    repoCount: number
+    hasRecentActivity: boolean
+    primaryLanguages: string[]
+    topRepos: GitHubRepoNormalized[]
+    totalStars: number
+    forkRatio: number // percentage of repos that are forks (from raw data context)
+  } | null
+}
