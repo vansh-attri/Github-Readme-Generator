@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useState, useRef } from 'react'
-import type { ReadmeInputs } from '../types'
+import type { ReadmeInputs, Suggestion, GitHubInspectResponse } from '../types'
 
 const defaultInputs: ReadmeInputs = {
   name: 'Your Name',
@@ -29,6 +29,11 @@ export default function Page() {
   const [markdown, setMarkdown] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const timer = useRef<number | null>(null)
+
+  // V2.0: GitHub inspection state
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [inspecting, setInspecting] = useState(false)
+  const [inspectError, setInspectError] = useState<string | null>(null)
 
   // Generate README by calling backend
   async function generate(it: ReadmeInputs) {
@@ -93,6 +98,60 @@ export default function Page() {
     a.click()
     a.remove()
     URL.revokeObjectURL(url)
+  }
+
+  // V2.0: Inspect GitHub profile (public data only)
+  async function inspectGitHub() {
+    const username = inputs.username.trim()
+    if (!username || username === 'your-github-username') {
+      setInspectError('Please enter a valid GitHub username first.')
+      return
+    }
+    setInspecting(true)
+    setInspectError(null)
+    setSuggestions([])
+    try {
+      const res = await fetch('/api/github/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ githubUsername: username })
+      })
+      const data: GitHubInspectResponse | { error: string } = await res.json()
+      if ('error' in data) {
+        setInspectError(data.error)
+      } else {
+        setSuggestions(data.suggestions)
+      }
+    } catch (err: any) {
+      setInspectError(err?.message || 'Failed to inspect GitHub profile')
+    } finally {
+      setInspecting(false)
+    }
+  }
+
+  // V2.0: Apply a suggestion (user explicitly approves)
+  function applySuggestion(suggestion: Suggestion) {
+    if (suggestion.data?.project) {
+      // Add project to featured projects
+      const project = suggestion.data.project
+      setInputs((s) => ({
+        ...s,
+        featuredProjects: [
+          ...s.featuredProjects.filter((p) => p.name !== project.name),
+          project
+        ]
+      }))
+    }
+    if (suggestion.data?.languages) {
+      // Merge languages into tech stack
+      const langs = suggestion.data.languages
+      setInputs((s) => ({
+        ...s,
+        techStack: Array.from(new Set([...s.techStack, ...langs]))
+      }))
+    }
+    // Remove the applied suggestion from list
+    setSuggestions((prev) => prev.filter((s) => s !== suggestion))
   }
 
   return (
@@ -192,6 +251,47 @@ export default function Page() {
           <button onClick={() => generate(inputs)} disabled={loading} style={{ marginRight: 8 }}>Generate README</button>
           <button onClick={handleCopy} style={{ marginRight: 8 }}>Copy Markdown</button>
           <button onClick={handleDownload}>Download README.md</button>
+        </div>
+
+        {/* V2.0: GitHub Suggestions Panel */}
+        <div style={{ marginTop: 20, padding: 12, border: '1px solid #ccc', borderRadius: 6, background: '#fafafa' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <strong>GitHub Suggestions</strong>
+            <button onClick={inspectGitHub} disabled={inspecting} style={{ marginLeft: 'auto' }}>
+              {inspecting ? 'Inspecting…' : 'Inspect GitHub Profile'}
+            </button>
+          </div>
+          {inspectError && (
+            <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 13 }}>{inspectError}</div>
+          )}
+          {suggestions.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              {suggestions.map((s, i) => (
+                <div key={i} style={{ marginBottom: 8, padding: 8, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <span style={{
+                      fontSize: 11,
+                      padding: '2px 6px',
+                      borderRadius: 3,
+                      background: s.type === 'warning' ? '#fef3c7' : s.type === 'repo' ? '#dbeafe' : '#d1fae5',
+                      color: s.type === 'warning' ? '#92400e' : s.type === 'repo' ? '#1e40af' : '#065f46'
+                    }}>
+                      {s.type}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 13 }}>{s.message}</span>
+                    {(s.data?.project || s.data?.languages) && (
+                      <button onClick={() => applySuggestion(s)} style={{ fontSize: 12 }}>Apply</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {suggestions.length === 0 && !inspecting && !inspectError && (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              Click "Inspect GitHub Profile" to get suggestions based on your public repos.
+            </div>
+          )}
         </div>
       </div>
 
