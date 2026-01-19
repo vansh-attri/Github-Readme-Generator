@@ -41,8 +41,19 @@ export default function Page() {
   const [githubDataForHeuristics, setGithubDataForHeuristics] = useState<HeuristicsInput['githubData']>(null)
 
   // V2.2: GitHub OAuth state
-  const [githubUser, setGithubUser] = useState<{ login: string; name: string | null; avatar_url: string } | null>(null)
+  const [githubUser, setGithubUser] = useState<{ login: string; name: string | null; avatar_url: string; hasWriteAccess?: boolean } | null>(null)
   const [oauthError, setOauthError] = useState<string | null>(null)
+
+  // V3: Commit to GitHub state
+  const [commitState, setCommitState] = useState<{
+    step: 'idle' | 'checking' | 'no-repo' | 'preview' | 'confirming' | 'committing' | 'success' | 'error'
+    repoExists?: boolean
+    currentReadme?: string | null
+    readmeSha?: string | null
+    error?: string
+    commitUrl?: string
+  }>({ step: 'idle' })
+  const [commitConfirmed, setCommitConfirmed] = useState(false)
 
   // V2.2: Check for OAuth status on mount and handle callback params
   useEffect(() => {
@@ -85,11 +96,152 @@ export default function Page() {
     try {
       await fetch('/api/auth/github/disconnect', { method: 'POST' })
       setGithubUser(null)
+      setCommitState({ step: 'idle' })
+      setCommitConfirmed(false)
       // Clear cookie client-side as well
       document.cookie = 'github_user=; path=/; max-age=0'
     } catch {
       // Ignore errors
     }
+  }
+
+  // V3: Start the commit flow - check repo and get current README
+  async function startCommitFlow() {
+    if (!githubUser?.hasWriteAccess) {
+      // Need to get write access first
+      return
+    }
+
+    setCommitState({ step: 'checking' })
+    setCommitConfirmed(false)
+
+    try {
+      const res = await fetch('/api/github/commit-readme', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'check' })
+      })
+      const data = await res.json()
+
+      if (data.error) {
+        setCommitState({ step: 'error', error: data.error })
+        return
+      }
+
+      if (!data.repoExists) {
+        setCommitState({ 
+          step: 'no-repo', 
+          repoExists: false,
+          error: data.message 
+        })
+        return
+      }
+
+      setCommitState({
+        step: 'preview',
+        repoExists: true,
+        currentReadme: data.currentReadme,
+        readmeSha: data.readmeSha
+      })
+    } catch (err: any) {
+      setCommitState({ step: 'error', error: err?.message || 'Failed to check repository' })
+    }
+  }
+
+  // V3: Create the profile repo
+  async function createProfileRepo() {
+    setCommitState((s) => ({ ...s, step: 'checking' }))
+
+    try {
+      const res = await fetch('/api/github/commit-readme', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create-repo' })
+      })
+      const data = await res.json()
+
+      if (!data.success) {
+        setCommitState({ step: 'error', error: data.error || 'Failed to create repository' })
+        return
+      }
+
+      // Now start the commit flow again
+      await startCommitFlow()
+    } catch (err: any) {
+      setCommitState({ step: 'error', error: err?.message || 'Failed to create repository' })
+    }
+  }
+
+  // V3: Execute the commit (only after explicit confirmation)
+  async function executeCommit() {
+    if (!commitConfirmed) {
+      return // Safety check
+    }
+
+    setCommitState((s) => ({ ...s, step: 'committing' }))
+
+    try {
+      const res = await fetch('/api/github/commit-readme', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          action: 'commit',
+          content: markdown,
+          confirmed: true
+        })
+      })
+      const data = await res.json()
+
+      if (!data.success) {
+        setCommitState({ step: 'error', error: data.error || 'Failed to commit' })
+        return
+      }
+
+      setCommitState({
+        step: 'success',
+        commitUrl: data.commitUrl
+      })
+      setCommitConfirmed(false)
+    } catch (err: any) {
+      setCommitState({ step: 'error', error: err?.message || 'Failed to commit' })
+    }
+  }
+
+  // V3: Cancel the commit flow
+  function cancelCommitFlow() {
+    setCommitState({ step: 'idle' })
+    setCommitConfirmed(false)
+  }
+
+  // V3: Generate a simple diff view
+  function generateDiff(oldContent: string | null | undefined, newContent: string): string {
+    if (!oldContent) {
+      return '+ (New file - entire content will be added)'
+    }
+    
+    const oldLines = oldContent.split('\n')
+    const newLines = newContent.split('\n')
+    
+    let diff = ''
+    const maxLines = Math.max(oldLines.length, newLines.length)
+    
+    for (let i = 0; i < maxLines; i++) {
+      const oldLine = oldLines[i]
+      const newLine = newLines[i]
+      
+      if (oldLine === newLine) {
+        diff += `  ${newLine || ''}\n`
+      } else if (oldLine === undefined) {
+        diff += `+ ${newLine}\n`
+      } else if (newLine === undefined) {
+        diff += `- ${oldLine}\n`
+      } else {
+        diff += `- ${oldLine}\n`
+        diff += `+ ${newLine}\n`
+      }
+    }
+    
+    return diff
   }
 
   // Generate README by calling backend
@@ -504,6 +656,246 @@ export default function Page() {
           {suggestions.length === 0 && !inspecting && !inspectError && (
             <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
               Click "Inspect GitHub Profile" to get suggestions based on your public repos.
+            </div>
+          )}
+        </div>
+
+        {/* V3: Publish to GitHub Section */}
+        <div style={{ marginTop: 20, padding: 12, border: '2px solid #fbbf24', borderRadius: 6, background: '#fffbeb' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <strong style={{ fontSize: 14, color: '#92400e' }}>⚠️ Publish to GitHub</strong>
+          </div>
+          
+          <div style={{ fontSize: 12, color: '#78716c', marginBottom: 12 }}>
+            This will commit your README to <code style={{ background: '#fef3c7', padding: '1px 4px', borderRadius: 2 }}>
+              {githubUser?.login || inputs.username}/{githubUser?.login || inputs.username}/README.md
+            </code>
+          </div>
+
+          {/* No write access - show upgrade button */}
+          {(!githubUser || !githubUser.hasWriteAccess) && (
+            <div>
+              <div style={{ fontSize: 12, color: '#b45309', marginBottom: 8 }}>
+                Write access required. This permission is used only to commit your profile README when you explicitly approve.
+              </div>
+              <a 
+                href="/api/auth/github?scope=write"
+                style={{ 
+                  display: 'inline-block',
+                  padding: '8px 16px',
+                  background: '#f59e0b',
+                  color: '#fff',
+                  borderRadius: 4,
+                  fontSize: 13,
+                  textDecoration: 'none',
+                  fontWeight: 500
+                }}
+              >
+                Grant Write Access
+              </a>
+            </div>
+          )}
+
+          {/* Has write access - show commit flow */}
+          {githubUser?.hasWriteAccess && (
+            <div>
+              {/* Idle state */}
+              {commitState.step === 'idle' && (
+                <button 
+                  onClick={startCommitFlow}
+                  style={{ 
+                    padding: '8px 16px',
+                    background: '#f59e0b',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 4,
+                    fontSize: 13,
+                    fontWeight: 500,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Start Commit Flow
+                </button>
+              )}
+
+              {/* Checking state */}
+              {commitState.step === 'checking' && (
+                <div style={{ fontSize: 13, color: '#78716c' }}>Checking repository...</div>
+              )}
+
+              {/* No repo exists */}
+              {commitState.step === 'no-repo' && (
+                <div>
+                  <div style={{ fontSize: 13, color: '#b45309', marginBottom: 8 }}>
+                    Repository <code>{githubUser.login}/{githubUser.login}</code> does not exist.
+                    <br />
+                    <span style={{ fontSize: 12 }}>GitHub shows your profile README from a repo with your username.</span>
+                  </div>
+                  <button 
+                    onClick={createProfileRepo}
+                    style={{ 
+                      padding: '8px 16px',
+                      background: '#f59e0b',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 4,
+                      fontSize: 13,
+                      cursor: 'pointer',
+                      marginRight: 8
+                    }}
+                  >
+                    Create Repository
+                  </button>
+                  <button 
+                    onClick={cancelCommitFlow}
+                    style={{ 
+                      padding: '8px 16px',
+                      background: '#e5e7eb',
+                      color: '#374151',
+                      border: 'none',
+                      borderRadius: 4,
+                      fontSize: 13,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {/* Preview state - show diff */}
+              {commitState.step === 'preview' && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#92400e', marginBottom: 8 }}>
+                    📋 Diff Preview (Old → New)
+                  </div>
+                  <div style={{ 
+                    maxHeight: 200, 
+                    overflow: 'auto', 
+                    background: '#1f2937', 
+                    color: '#e5e7eb',
+                    padding: 12, 
+                    borderRadius: 4,
+                    fontSize: 11,
+                    fontFamily: 'ui-monospace, monospace',
+                    marginBottom: 12
+                  }}>
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+                      {generateDiff(commitState.currentReadme, markdown)}
+                    </pre>
+                  </div>
+                  
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12, cursor: 'pointer' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={commitConfirmed}
+                      onChange={(e) => setCommitConfirmed(e.target.checked)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span style={{ fontSize: 12, color: '#78716c' }}>
+                      I understand this will update my GitHub profile README at{' '}
+                      <code style={{ background: '#fef3c7', padding: '1px 4px', borderRadius: 2 }}>
+                        github.com/{githubUser.login}/{githubUser.login}
+                      </code>
+                    </span>
+                  </label>
+
+                  <button 
+                    onClick={executeCommit}
+                    disabled={!commitConfirmed}
+                    style={{ 
+                      padding: '8px 16px',
+                      background: commitConfirmed ? '#16a34a' : '#9ca3af',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 4,
+                      fontSize: 13,
+                      fontWeight: 500,
+                      cursor: commitConfirmed ? 'pointer' : 'not-allowed',
+                      marginRight: 8
+                    }}
+                  >
+                    Commit to GitHub
+                  </button>
+                  <button 
+                    onClick={cancelCommitFlow}
+                    style={{ 
+                      padding: '8px 16px',
+                      background: '#e5e7eb',
+                      color: '#374151',
+                      border: 'none',
+                      borderRadius: 4,
+                      fontSize: 13,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {/* Committing state */}
+              {commitState.step === 'committing' && (
+                <div style={{ fontSize: 13, color: '#78716c' }}>Committing to GitHub...</div>
+              )}
+
+              {/* Success state */}
+              {commitState.step === 'success' && (
+                <div>
+                  <div style={{ fontSize: 13, color: '#16a34a', marginBottom: 8 }}>
+                    ✅ Successfully committed!
+                  </div>
+                  {commitState.commitUrl && (
+                    <a 
+                      href={commitState.commitUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: 12, color: '#2563eb' }}
+                    >
+                      View commit on GitHub →
+                    </a>
+                  )}
+                  <div style={{ marginTop: 8 }}>
+                    <button 
+                      onClick={cancelCommitFlow}
+                      style={{ 
+                        padding: '6px 12px',
+                        background: '#e5e7eb',
+                        color: '#374151',
+                        border: 'none',
+                        borderRadius: 4,
+                        fontSize: 12,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Error state */}
+              {commitState.step === 'error' && (
+                <div>
+                  <div style={{ fontSize: 13, color: '#dc2626', marginBottom: 8 }}>
+                    ❌ Error: {commitState.error}
+                  </div>
+                  <button 
+                    onClick={cancelCommitFlow}
+                    style={{ 
+                      padding: '6px 12px',
+                      background: '#e5e7eb',
+                      color: '#374151',
+                      border: 'none',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Try Again
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

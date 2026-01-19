@@ -7,7 +7,10 @@ import { exchangeCodeForToken, fetchAuthenticatedUser } from '../../../../../lib
  * Handles GitHub OAuth callback.
  * Exchanges code for token, verifies user, returns to app.
  * 
- * Token is passed to frontend via short-lived cookie for session use only.
+ * V2.2: read:user scope for identity verification
+ * V3: repo scope for README commits (stored separately)
+ * 
+ * Token is passed via short-lived httpOnly cookie for session use only.
  * Token is NEVER stored in database or localStorage.
  */
 export async function GET(req: Request) {
@@ -39,6 +42,9 @@ export async function GET(req: Request) {
     return NextResponse.redirect(`${origin}?oauth_error=invalid_state`)
   }
 
+  // V3: Extract scope from state (format: randomstring:read or randomstring:write)
+  const isWriteScope = state.endsWith(':write')
+
   const clientId = process.env.GITHUB_CLIENT_ID
   const clientSecret = process.env.GITHUB_CLIENT_SECRET
 
@@ -65,13 +71,15 @@ export async function GET(req: Request) {
   }
 
   // Success: redirect back to app with user info
-  // Token is stored in httpOnly cookie for this session only
   const response = NextResponse.redirect(
-    `${origin}?oauth_success=true&github_user=${encodeURIComponent(userResult.login)}`
+    `${origin}?oauth_success=true&github_user=${encodeURIComponent(userResult.login)}${isWriteScope ? '&write_access=true' : ''}`
   )
 
+  // V3: Use different cookie for write token vs read token
+  const tokenCookieName = isWriteScope ? 'github_write_token' : 'github_token'
+
   // Set token in httpOnly cookie (not accessible to JS, used server-side only)
-  response.cookies.set('github_token', accessToken, {
+  response.cookies.set(tokenCookieName, accessToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
@@ -80,10 +88,12 @@ export async function GET(req: Request) {
   })
 
   // Set user info in regular cookie (accessible to frontend for display)
+  // V3: Include hasWriteAccess flag
   response.cookies.set('github_user', JSON.stringify({
     login: userResult.login,
     name: userResult.name,
-    avatar_url: userResult.avatar_url
+    avatar_url: userResult.avatar_url,
+    hasWriteAccess: isWriteScope
   }), {
     httpOnly: false, // Accessible to frontend
     secure: process.env.NODE_ENV === 'production',

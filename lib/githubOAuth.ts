@@ -1,30 +1,40 @@
 /**
- * GitHub OAuth Utilities (V2.2)
+ * GitHub OAuth Utilities (V2.2 + V3)
  * 
- * Read-only OAuth for identity verification and improved rate limits.
+ * V2.2: Read-only OAuth for identity verification and improved rate limits.
+ * V3: Write OAuth for explicit, user-approved README commits.
  * 
- * SCOPE: read:user ONLY
- * PURPOSE: Verify username ownership, improve inspection reliability
+ * SCOPES:
+ * - read:user: Identity verification (V2.2)
+ * - repo: Write access for README commits (V3) - ONLY with explicit user consent
  * 
- * ❌ NEVER: write, commit, push, store tokens persistently
+ * ❌ NEVER: auto-commit, store tokens persistently, log tokens
  */
 
 const GITHUB_OAUTH_URL = 'https://github.com/login/oauth/authorize'
 const GITHUB_TOKEN_URL = 'https://github.com/login/oauth/access_token'
 const GITHUB_USER_URL = 'https://api.github.com/user'
 
-// OAuth scope: MINIMUM required - read:user only
-const OAUTH_SCOPE = 'read:user'
+// OAuth scopes
+const OAUTH_SCOPE_READ = 'read:user'
+const OAUTH_SCOPE_WRITE = 'repo' // V3: Required for committing to repos
 
 /**
  * Generates the GitHub OAuth authorization URL.
  * Redirects user to GitHub for consent.
+ * 
+ * @param scope - 'read' for identity only, 'write' for commit access
  */
-export function getGitHubAuthUrl(clientId: string, redirectUri: string, state: string): string {
+export function getGitHubAuthUrl(
+  clientId: string, 
+  redirectUri: string, 
+  state: string,
+  scope: 'read' | 'write' = 'read'
+): string {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
-    scope: OAUTH_SCOPE,
+    scope: scope === 'write' ? OAUTH_SCOPE_WRITE : OAUTH_SCOPE_READ,
     state: state,
     allow_signup: 'false' // Don't prompt for signup
   })
