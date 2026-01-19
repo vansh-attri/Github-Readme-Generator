@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
 import { fetchPublicRepos } from '../../../../lib/githubInspector'
 import { filterAndRankRepos, extractLanguages } from '../../../../lib/repoRanker'
 import { generateSuggestions } from '../../../../lib/suggestionsEngine'
@@ -8,9 +9,13 @@ import type { GitHubInspectResponse } from '../../../../types'
  * POST /api/github/inspect
  *
  * Input: { githubUsername: string }
- * Output: { username, repos, languages, suggestions }
+ * Output: { username, repos, languages, suggestions, authenticated }
  *
- * Fetches public GitHub data only (no auth).
+ * V2.2: Uses OAuth token if available for:
+ * - Higher rate limits
+ * - More reliable data
+ * 
+ * Data scope is IDENTICAL whether authenticated or not.
  * Filters and ranks repos deterministically.
  * Returns suggestions (never auto-inserts).
  */
@@ -28,8 +33,12 @@ export async function POST(req: Request) {
 
     const username = githubUsername.trim()
 
-    // Fetch public repos (unauthenticated)
-    const rawRepos = await fetchPublicRepos(username)
+    // V2.2: Check for OAuth token (httpOnly cookie)
+    const cookieStore = await cookies()
+    const accessToken = cookieStore.get('github_token')?.value
+
+    // Fetch public repos (authenticated if token available, falls back to public)
+    const rawRepos = await fetchPublicRepos(username, accessToken)
 
     // Filter and rank (deterministic, no AI)
     const repos = filterAndRankRepos(rawRepos)
@@ -40,11 +49,12 @@ export async function POST(req: Request) {
     // Generate suggestions (rules-based, no AI)
     const suggestions = generateSuggestions(repos, languages)
 
-    const response: GitHubInspectResponse = {
+    const response: GitHubInspectResponse & { authenticated?: boolean } = {
       username,
       repos,
       languages,
-      suggestions
+      suggestions,
+      authenticated: !!accessToken // V2.2: Indicate if request was authenticated
     }
 
     return NextResponse.json(response)

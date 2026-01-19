@@ -4,18 +4,34 @@ const GITHUB_API_BASE = 'https://api.github.com'
 
 /**
  * Fetches public repositories for a GitHub user.
- * Uses unauthenticated requests only (public data).
- * Does NOT fetch: private repos, followers, commits, issues, PRs.
+ * 
+ * V2.2: Optionally accepts an access token for authenticated requests.
+ * Authenticated requests have higher rate limits and more reliable data.
+ * 
+ * Data scope is IDENTICAL whether authenticated or not:
+ * - Repos, descriptions, languages, stars, last updated
+ * - Does NOT fetch: private repos, followers, commits, issues, PRs
+ * 
+ * @param username - GitHub username to fetch repos for
+ * @param accessToken - Optional OAuth token for authenticated requests
  */
-export async function fetchPublicRepos(username: string): Promise<GitHubRepoRaw[]> {
+export async function fetchPublicRepos(
+  username: string,
+  accessToken?: string
+): Promise<GitHubRepoRaw[]> {
   const url = `${GITHUB_API_BASE}/users/${encodeURIComponent(username)}/repos?type=public&per_page=100&sort=updated`
 
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'github-readme-generator-mvp'
-    }
-  })
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github.v3+json',
+    'User-Agent': 'github-readme-generator-mvp'
+  }
+
+  // V2.2: Add authorization header if token provided
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`
+  }
+
+  const res = await fetch(url, { headers })
 
   if (!res.ok) {
     if (res.status === 404) {

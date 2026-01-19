@@ -40,6 +40,58 @@ export default function Page() {
   const [heuristicRecs, setHeuristicRecs] = useState<HeuristicRecommendation[]>([])
   const [githubDataForHeuristics, setGithubDataForHeuristics] = useState<HeuristicsInput['githubData']>(null)
 
+  // V2.2: GitHub OAuth state
+  const [githubUser, setGithubUser] = useState<{ login: string; name: string | null; avatar_url: string } | null>(null)
+  const [oauthError, setOauthError] = useState<string | null>(null)
+
+  // V2.2: Check for OAuth status on mount and handle callback params
+  useEffect(() => {
+    // Check for existing GitHub user cookie
+    const userCookie = document.cookie
+      .split(';')
+      .find((c) => c.trim().startsWith('github_user='))
+      ?.split('=')
+      .slice(1)
+      .join('=')
+
+    if (userCookie) {
+      try {
+        const user = JSON.parse(decodeURIComponent(userCookie))
+        setGithubUser(user)
+      } catch {
+        // Invalid cookie, ignore
+      }
+    }
+
+    // Handle OAuth callback params
+    const params = new URLSearchParams(window.location.search)
+    const success = params.get('oauth_success')
+    const error = params.get('oauth_error')
+    const login = params.get('github_user')
+
+    if (success && login) {
+      // Clean URL without reloading
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+
+    if (error) {
+      setOauthError(decodeURIComponent(error))
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
+
+  // V2.2: Disconnect GitHub OAuth
+  async function disconnectGitHub() {
+    try {
+      await fetch('/api/auth/github/disconnect', { method: 'POST' })
+      setGithubUser(null)
+      // Clear cookie client-side as well
+      document.cookie = 'github_user=; path=/; max-age=0'
+    } catch {
+      // Ignore errors
+    }
+  }
+
   // Generate README by calling backend
   async function generate(it: ReadmeInputs) {
     setLoading(true)
@@ -307,6 +359,79 @@ export default function Page() {
           <button onClick={() => generate(inputs)} disabled={loading} style={{ marginRight: 8 }}>Generate README</button>
           <button onClick={handleCopy} style={{ marginRight: 8 }}>Copy Markdown</button>
           <button onClick={handleDownload}>Download README.md</button>
+        </div>
+
+        {/* V2.2: GitHub OAuth Connection Panel */}
+        <div style={{ marginTop: 20, padding: 12, border: '1px solid #d1d5db', borderRadius: 6, background: '#f9fafb' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <strong style={{ fontSize: 14 }}>GitHub Connection</strong>
+            {githubUser ? (
+              <>
+                <span style={{ 
+                  display: 'inline-flex', 
+                  alignItems: 'center', 
+                  gap: 6, 
+                  padding: '4px 8px', 
+                  background: '#d1fae5', 
+                  borderRadius: 4,
+                  fontSize: 12,
+                  color: '#065f46'
+                }}>
+                  ✔ Verified: {githubUser.login}
+                </span>
+                <button 
+                  onClick={disconnectGitHub} 
+                  style={{ 
+                    marginLeft: 'auto', 
+                    fontSize: 12, 
+                    padding: '4px 10px',
+                    background: '#fee2e2',
+                    border: '1px solid #fecaca',
+                    borderRadius: 4,
+                    color: '#991b1b',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Disconnect
+                </button>
+              </>
+            ) : (
+              <>
+                <a 
+                  href="/api/auth/github"
+                  style={{ 
+                    marginLeft: 'auto',
+                    display: 'inline-block',
+                    padding: '6px 12px',
+                    background: '#24292f',
+                    color: '#fff',
+                    borderRadius: 4,
+                    fontSize: 12,
+                    textDecoration: 'none'
+                  }}
+                >
+                  Connect GitHub (Read-Only)
+                </a>
+              </>
+            )}
+          </div>
+          <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280' }}>
+            {githubUser 
+              ? 'Your GitHub account is verified. Inspection uses authenticated requests for better reliability.'
+              : 'Used only to verify your profile and improve suggestions. Read-only access, no writes.'
+            }
+          </div>
+          {oauthError && (
+            <div style={{ marginTop: 6, fontSize: 12, color: '#b91c1c' }}>
+              OAuth error: {oauthError}
+              <button 
+                onClick={() => setOauthError(null)} 
+                style={{ marginLeft: 8, fontSize: 11, cursor: 'pointer' }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
         </div>
 
         {/* V2.0: GitHub Suggestions Panel */}
